@@ -11,3 +11,7 @@ The Tetris game uses a 10x30 playing field and implements hard and soft drop of 
 ## Schematic
 
 ![](schematic/Tetris.png)
+
+## Prototype
+
+![](media/Prototype.jpg)
