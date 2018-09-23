@@ -29,13 +29,11 @@ void ssd1306_fill_to_eol(uint8_t fill);
 void ssd1306_fill(uint8_t fill);
 #define ssd1306_clear() ssd1306_fill(0x00)
 void ssd1306_new_line(uint8_t fontHeight); // height in pages (8 pixels)
+void ssd1306_bitmap(uint8_t x0, uint8_t y0, uint8_t x1, uint8_t y1, uint8_t bitmap[]);
 void ssd1306_bitmap_p(uint8_t x0, uint8_t y0, uint8_t x1, uint8_t y1, const uint8_t bitmap[]);
 void ssd1306_char_font6x8(uint8_t c);
-void ssd1306_char_font6x8_cw(uint8_t c);
 void ssd1306_string_font6x8(uint8_t *s);
 void ssd1306_string_font6x8_p(const uint8_t *s);
-void ssd1306_string_font6x8_cw(uint8_t x, char *s);
-void ssd1306_string_font6x8_cw_p(uint8_t x, const char *s);
 void ssd1306_char_font8x16(uint8_t c);
 void ssd1306_string_font8x16(uint8_t *s);
 void ssd1306_string_font8x16_p(const uint8_t *s);

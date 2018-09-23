@@ -301,6 +301,19 @@ void ssd1306_new_line(uint8_t fontHeight) {
 	ssd1306_set_cursor(0, oledY);
 }
 
+void ssd1306_bitmap(uint8_t x0, uint8_t y0, uint8_t x1, uint8_t y1, uint8_t bitmap[]) {
+	uint16_t j = 0;
+	for (uint8_t y = y0; y < y1; y++) {
+		ssd1306_set_cursor(x0,y);
+		ssd1306_send_data_start();
+		for (uint8_t x = x0; x < x1; x++) {
+			i2c_write(bitmap[j++]);
+		}
+		i2c_stop();
+	}
+	ssd1306_set_cursor(0, 0);
+}
+
 void ssd1306_bitmap_p(uint8_t x0, uint8_t y0, uint8_t x1, uint8_t y1, const uint8_t bitmap[]) {
 	uint16_t j = 0;
 	for (uint8_t y = y0; y < y1; y++) {
@@ -334,22 +347,6 @@ void ssd1306_char_font6x8(uint8_t c) {
 	oledX+=6;
 }
 
-void ssd1306_char_font6x8_cw(uint8_t c) {
-	ssd1306_send_data_start();
-	uint16_t offset = ((uint16_t)c - 32) * 5;
-	for (uint8_t i = 8; i-- > 0; ) {
-		uint8_t p = 0;
-		for (int8_t j = 5; j-- > 0; ) {
-			if (pgm_read_byte(&font6x8[offset + j]) & (1 << i)) {
-				p |= 1 << j;
-			}
-		}
-		i2c_write(p);
-	}
-	i2c_stop();
-	oledX+=8;
-}
-
 void ssd1306_string_font6x8(uint8_t *s) {
 	while (*s) {
 		ssd1306_char_font6x8(*s++);
@@ -360,24 +357,6 @@ void ssd1306_string_font6x8_p(const uint8_t *s) {
 	uint8_t c;
 	while ((c = pgm_read_byte(s++))) {
 		ssd1306_char_font6x8(c);
-	}
-}
-
-void ssd1306_string_font6x8_cw(uint8_t x, char *s) {
-	uint8_t i = 0;
-	while (*s) {
-		ssd1306_set_cursor(x, i);
-		ssd1306_char_font6x8_cw(*s++);
-		i++;
-	}
-}
-
-void ssd1306_string_font6x8_cw_p(uint8_t x, const char *s) {
-	uint8_t i = 0, c;
-	while ((c = pgm_read_byte(s++))) {
-		ssd1306_set_cursor(x, i);
-		ssd1306_char_font6x8_cw(c);
-		i++;
 	}
 }
 
@@ -444,7 +423,7 @@ void ssd1306_draw_hline(uint8_t y) {
 }
 
 void ssd1306_draw_vline(uint8_t x) {
-	for (uint8_t i = 0; i < 8; i++) {
+	for (uint8_t i = 0; i < SSD1306_PAGES; i++) {
 		ssd1306_set_cursor(x, i);
 		ssd1306_send_data_start();
 		i2c_write(0xFF);
