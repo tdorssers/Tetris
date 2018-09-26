@@ -15,6 +15,8 @@
  * FPS rate. The game uses a 10x30 playing field and implements hard and soft
  * dropping of the pieces, as well as delayed auto shift (DAS), entry delay
  * (ARE), piece preview, hold piece and the Super Rotation System.
+ * The highest score is stored in EEPROM as well as the players name. The game
+ * will enter sleep mode automatically. The game wakes up by a button push.
  * In game power draw is <20 mA and standby power draw is <1 mA.
  */ 
 
@@ -22,6 +24,7 @@
 
 #include <avr/io.h>
 #include <avr/interrupt.h>
+#include <avr/eeprom.h>
 #include <avr/pgmspace.h>
 #include <avr/sfr_defs.h>
 #include <avr/sleep.h>
@@ -30,8 +33,11 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
-#include "i2cmaster.h"
+#include "ssd1306_i2c.h"
 #include "ssd1306.h"
+
+//#define DOUBLE_BUFFER
+//#define DEBUG_FPS
 
 // Buffers for font drawing
 char buffer[6];
@@ -48,7 +54,7 @@ uint8_t piece, rotate, nextPiece, holdPiece = NO_PIECE;
 // Collision detect mode enum
 typedef enum {CD_DROP, CD_ROTATE, CD_LEFT, CD_RIGHT, CD_LOCK} mode_t;
 // Random number seed variable
-uint16_t random_number = 1;
+uint16_t random_number;
 // Delay constants
 #define DROP_DELAY  20
 #define LOCK_DELAY  20
@@ -57,7 +63,10 @@ uint16_t random_number = 1;
 #define SOFT_DELAY  2
 // Millisecond counter
 volatile uint16_t timer0_millis;
-bool showFps = false;
+// Non volatile
+uint16_t EEMEM nvHighScore = 0;
+uint8_t EEMEM nvName[6] = "";
+uint16_t EEMEM nvRandomSeed = 1;
 // Mask for play field
 const uint8_t PROGMEM mask[] = {0xDB, 0xB6, 0x6D, 0xDB};
 // Each piece is 4x4 bits
@@ -70,62 +79,64 @@ const uint16_t PROGMEM pieces[] = {
 	0x270, 0x262, 0x72, 0x232,   // T
 	0x360, 0x462, 0x36, 0x231    // Z
 };
-const uint8_t PROGMEM bmpScore[] = {
-	0x0, 0x8F, 0x50, 0x50, 0x4E, 0x81, 0x1, 0x1E, 
-	0x0, 0xE3, 0x14, 0x10, 0x10, 0xE3, 0x0, 0x0, 
-	0x0, 0x4, 0x5, 0x5, 0x4D, 0x34, 0x0, 0x0, 
-	0x0, 0xE, 0x1, 0x1F, 0x11, 0xE, 0x0, 0x0
-};
-const uint8_t PROGMEM bmpLevel[] = {
-	0x0, 0x9F, 0x41, 0xC1, 0x41, 0x81, 0x1, 0x1, 
-	0x0, 0x43, 0xA0, 0x17, 0x14, 0x13, 0x0, 0x0, 
-	0x0, 0x0, 0x0, 0x1, 0x1, 0x1, 0x0, 0x0
-};
-const uint8_t PROGMEM bmpGameOver[] = {
-	0x1, 0xE1, 0x11, 0x11, 0x11, 0x11, 0x11, 0xE1, 
-	0x1, 0xE1, 0x11, 0x11, 0xD1, 0x11, 0x11, 0xE1, 
-	0x0, 0x10, 0x29, 0x45, 0x45, 0x45, 0x1, 0x0, 
-	0x0, 0x79, 0x45, 0x79, 0x41, 0x38, 0x1, 0x0, 
-	0x0, 0x4E, 0x41, 0x5F, 0xD1, 0x4E, 0x0, 0x0, 
-	0x0, 0x91, 0x51, 0xD5, 0x55, 0x8B, 0x0, 0x0, 
-	0x80, 0x80, 0x80, 0x80, 0x84, 0x83, 0x80, 0x80,
-	0x80, 0x83, 0x80, 0x87, 0x84, 0x83, 0x80, 0x80
-};
-const uint8_t PROGMEM bmpFPS[] = {
-	0x0, 0x41, 0x41, 0x41, 0xCF, 0x41, 0x41, 0xDF,
-	0x0, 0xF0, 0x0, 0x0, 0xE3, 0x14, 0x14, 0xE3,
-	0x0, 0x0, 0x1, 0x1, 0x0, 0x0, 0x0, 0x1,
-	0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0
-};
 const uint8_t PROGMEM font6x8_90[] = {
-	0x0, 0xE, 0x11, 0x13, 0x15, 0x19, 0x11, 0xE, // 0
-	0x0, 0xE, 0x4, 0x4, 0x4, 0x4, 0x6, 0x4,      // 1
-	0x0, 0x1F, 0x2, 0x4, 0x8, 0x10, 0x11, 0xE,   // 2
-	0x0, 0xE, 0x11, 0x10, 0x8, 0x4, 0x8, 0x1F,   // 3
-	0x0, 0x8, 0x8, 0x1F, 0x9, 0xA, 0xC, 0x8,     // 4
-	0x0, 0xE, 0x11, 0x10, 0x10, 0xF, 0x1, 0x1F,  // 5
-	0x0, 0xE, 0x11, 0x11, 0xF, 0x1, 0x2, 0xC,    // 6
-	0x0, 0x2, 0x2, 0x2, 0x4, 0x8, 0x10, 0x1F,    // 7
-	0x0, 0xE, 0x11, 0x11, 0xE, 0x11, 0x11, 0xE,  // 8
-	0x0, 0x6, 0x8, 0x10, 0x1E, 0x11, 0x11, 0xE   // 9
+	0xE, 0x11, 0x13, 0x15, 0x19, 0x11, 0xE,   // 0
+	0xE, 0x4, 0x4, 0x4, 0x4, 0x6, 0x4,        // 1
+	0x1F, 0x2, 0x4, 0x8, 0x10, 0x11, 0xE,     // 2
+	0xE, 0x11, 0x10, 0x8, 0x4, 0x8, 0x1F,     // 3
+	0x8, 0x8, 0x1F, 0x9, 0xA, 0xC, 0x8,       // 4
+	0xE, 0x11, 0x10, 0x10, 0xF, 0x1, 0x1F,    // 5
+	0xE, 0x11, 0x11, 0xF, 0x1, 0x2, 0xC,      // 6
+	0x2, 0x2, 0x2, 0x4, 0x8, 0x10, 0x1F,      // 7
+	0xE, 0x11, 0x11, 0xE, 0x11, 0x11, 0xE,    // 8
+	0x6, 0x8, 0x10, 0x1E, 0x11, 0x11, 0xE,    // 9
+	0x11, 0x11, 0x1F, 0x11, 0x11, 0xA, 0x4,   // A
+	0xF, 0x11, 0x11, 0xF, 0x11, 0x11, 0xF,    // B
+	0xE, 0x11, 0x1, 0x1, 0x1, 0x11, 0xE,      // C
+	0x7, 0x9, 0x11, 0x11, 0x11, 0x9, 0x7,     // D
+	0x1F, 0x1, 0x1, 0xF, 0x1, 0x1, 0x1F,      // E
+	0x1, 0x1, 0x1, 0xF, 0x1, 0x1, 0x1F,       // F
+	0x1E, 0x11, 0x11, 0x1D, 0x1, 0x11, 0xE,   // G
+	0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11, // H
+	0xE, 0x4, 0x4, 0x4, 0x4, 0x4, 0xE,        // I
+	0x6, 0x9, 0x8, 0x8, 0x8, 0x8, 0x1C,       // J
+	0x11, 0x9, 0x5, 0x3, 0x5, 0x9, 0x11,      // K
+	0x1F, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1,       // L
+	0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11, // M
+	0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11, // N
+	0xE, 0x11, 0x11, 0x11, 0x11, 0x11, 0xE,   // O
+	0x1, 0x1, 0x1, 0xF, 0x11, 0x11, 0xF,      // P
+	0x16, 0x9, 0x15, 0x11, 0x11, 0x11, 0xE,   // Q
+	0x11, 0x9, 0x5, 0xF, 0x11, 0x11, 0xF,     // R
+	0xF, 0x10, 0x10, 0xE, 0x1, 0x1, 0x1E,     // S
+	0x4, 0x4, 0x4, 0x4, 0x4, 0x4, 0x1F,       // T
+	0xE, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,  // U
+	0x4, 0xA, 0x11, 0x11, 0x11, 0x11, 0x11,   // V
+	0xA, 0x15, 0x15, 0x15, 0x11, 0x11, 0x11,  // W
+	0x11, 0x11, 0xA, 0x4, 0xA, 0x11, 0x11,    // X
+	0x4, 0x4, 0x4, 0xA, 0x11, 0x11, 0x11,     // Y
+	0x1F, 0x1, 0x2, 0x4, 0x8, 0x10, 0x1F      // Z
 };
+const char PROGMEM pstrScore[] = "SCORE";
 
 // Prototypes
 uint8_t clearLine(void);
 bool collisionDetect(mode_t mode);
-void drawHeader(void);
 void drawPiece(uint8_t x, uint8_t y, uint8_t p, uint32_t *row);
 void drawScreen(void);
+void drawString_p(uint8_t x, uint8_t y, const char *s);
 void drawValue(uint8_t x, uint8_t y, uint16_t v);
-void eraseScore(void);
-void gameOver(void);
-uint16_t lfsr16_next(uint16_t n);
+inline uint16_t lfsr16_next(uint16_t n);
 inline void matrix_init(void);
+uint16_t millis(void);
 void newPiece(void);
 uint16_t prng(void);
+inline void prng_init(void);
 void scanMatrix(void);
+void scoreScreen (uint16_t score);
 void setupScreen(void);
-void swapPiece(void);
+void sleepMode(void);
+inline void swapPiece(void);
 inline void timer0_init();
 void waitRelease(void);
 
@@ -184,63 +195,124 @@ void drawScreen(void) {
 	}
 }
 
-// Draws maximal 5 digits of 6x8 pixels at position x starting on page y
-void drawValue(uint8_t x, uint8_t y, uint16_t v) {
-	uint8_t i = 0, j, c, offset, shift;
+// Draws maximal 5 digits or caps of 6x8 pixels at position x starting on page y
+void drawString_p(uint8_t x, uint8_t y, const char *s) {
+	uint8_t i = 0, j, c, shift;
+	uint16_t offset;
 	
 	memset(bitmap, 0, sizeof(bitmap));
-	utoa(v, buffer, 10);
 	shift = y * 8;
-	while ((c = buffer[i])) {
-		offset = (c - 48) * 8;
-		for (j = 0; j < 8; j++)
-			bitmap[j] |= (uint32_t)pgm_read_byte(&font6x8_90[offset++]) << shift;
+	while ((c = (s) ? pgm_read_byte(s + i) : buffer[i])) {		
+		if (c > 32) {
+			if (c > 64)
+				c -= 7;
+			offset = (uint16_t)(c - 48) * 7;
+			for (j = 1; j < 8; j++)
+				bitmap[j] |= (uint32_t)pgm_read_byte(&font6x8_90[offset++]) << shift;
+		}
 		shift += 6;
 		i++;
 	}
 	for (i = y; i < 4; i++) {
 		ssd1306_set_cursor(x, i);
 		ssd1306_send_data_start();
-		for (j = 0; j < 8; j++) {
+		for (j = 0; j < 8; j++)
 			i2c_write(((uint8_t *)&bitmap[j])[i]);
-		}
 		i2c_stop();
 	}
 }
 
-// Clear score area
-void eraseScore(void) {
-	uint8_t i;
-	
-	for (i = 0; i < 4; i++) {
-		ssd1306_set_cursor(112, i);
-		ssd1306_fill_length(0, 8);
-	}
-}
-
-// Draw FPS or score bitmap
-void drawHeader(void) {
-	ssd1306_bitmap_p(120, 0, 128, 4, showFps ? bmpFPS : bmpScore);
+void drawValue(uint8_t x, uint8_t y, uint16_t v) {
+	utoa(v, buffer, 10);
+	drawString_p(x, y, NULL);
 }
 
 // Setup game screen
 void setupScreen(void) {
 	ssd1306_clear();
 	ssd1306_on();
-	//ssd1306_bitmap_p(120, 0, 128, 4, bmpScore);
-	drawHeader();
-	ssd1306_bitmap_p(104, 0, 112, 3, bmpLevel);
+#ifdef DEBUG_FPS
+	drawString_p(120, 0, PSTR("FPS  "));
+#else
+	drawString_p(120, 0, pstrScore);
+#endif
+	drawString_p(104, 0, PSTR("LEV"));
 	memset(well, 0, sizeof(well));
+}
+
+// End of game screen
+void scoreScreen (uint16_t score) {
+	bool blink = false;
+	uint8_t i = 0, c = 65, delay = 0, cnt = 80;
+	uint16_t highScore;
+	
+	drawString_p(72, 0, PSTR(" GAME"));
+	drawString_p(64, 0, PSTR(" OVER"));
+	drawString_p(56, 0, PSTR("HIGH "));
+	drawString_p(48, 0, pstrScore);
+	if (score < (highScore = eeprom_read_word(&nvHighScore))) {
+		eeprom_read_block(&buffer, &nvName, sizeof(buffer));
+		drawString_p(40, 0, NULL);
+		drawValue(32, 0, highScore);
+		return;
+	}
+	drawString_p(40, 0, PSTR(" NAME"));
+	memset(buffer, 0, sizeof(buffer));
+	do {
+		scanMatrix();
+		if (buttonLeft && i > 0) {
+			waitRelease();
+			i--;
+		}
+		if (buttonRight && i < 4) {
+			waitRelease();
+			i++;
+		}
+		if (buttonUp) {
+			waitRelease();
+			if (c == 32)
+				c = 65;
+			else {
+				if (c < 90)
+					c++;
+				else
+					c = 32;
+			}
+		}
+		if (buttonDown) {
+			waitRelease();
+			if (c == 32)
+				c = 90;
+			else {
+				if (c > 65)
+					c--;
+				else
+					c = 32;
+			}
+		}
+		buffer[i] = (blink) ? 32 : c;
+		drawString_p(32, 0, NULL);
+		buffer[i] = c;
+		if (--delay == 0) {
+			blink ^= true;
+			if (--cnt == 0)
+				break;
+		}
+	} while (!buttonA && !buttonB);
+	waitRelease();
+	drawString_p(32, 0, NULL);
+	eeprom_write_block(&buffer, &nvName, sizeof(nvName));
+	eeprom_write_word(&nvHighScore, score);
 }
 
 // Dummy ISR
 EMPTY_INTERRUPT(WDT_vect);
 
-// End of game screen and sleep mode
-void gameOver(void) {
+// Sleep mode
+void sleepMode(void) {
 	uint8_t cnt = 80;
 	
-	ssd1306_bitmap_p(56, 0, 72, 4, bmpGameOver);
+	eeprom_write_word(&nvRandomSeed, random_number);
 	cli();
 	WDTCR = _BV(WDCE) | _BV(WDE);				// Watchdog change enable
 	WDTCR = _BV(WDIE) | _BV(WDP1) | _BV(WDP0);	// Watchdog timeout interrupt enable, period 0.125 s
@@ -306,7 +378,7 @@ uint8_t clearLine(void) {
 }
 
 // Galois Linear Feedback Shift Register
-uint16_t lfsr16_next(uint16_t n) {
+inline uint16_t lfsr16_next(uint16_t n) {
 	return (n >> 1) ^ (-(n & 0x1) & 0xB400);
 }
 
@@ -329,7 +401,7 @@ void newPiece(void) {
 }
 
 // Swap falling piece with hold piece
-void swapPiece(void) {
+inline void swapPiece(void) {
 	uint8_t temp;
 	
 	temp = piece;
@@ -412,32 +484,34 @@ inline void timer0_init() {
 	sei();
 }
 
+// Read random seed from EEPROM
+inline void prng_init(void) {
+	random_number = eeprom_read_word(&nvRandomSeed);
+	newPiece();
+	newPiece();
+}
+
 // Main loop
 int main(void) {
 	bool dropPiece = false, mayHold = true, holdButtonUp = false, holdButtonB = false;
 	uint8_t holdButtonLeft = 0, holdButtonRight = 0, level = 0, lines = 0, temp;
 	uint8_t dropDelay = DROP_DELAY + ENTRY_DELAY, lockDelay = LOCK_DELAY, dropScore = 0;
-	uint16_t score = 0, start, fps = 0;
-	
+	uint16_t score = 0, start;
+#ifdef DEBUG_FPS
+	uint16_t fps = 0;
+#endif
+
 	matrix_init();
-	i2c_init();
 	ssd1306_init();
 	timer0_init();
+	prng_init();
 	setupScreen();
 #ifdef DOUBLE_BUFFER
 	ssd1306_switchFrame();
 	setupScreen();
 #endif
-	newPiece();
 	while (1) {
 		start = millis();
-		// Concurrent pushing of up and down button toggles displaying fps or score
-		if (buttonUp && buttonDown) {
-			showFps ^= true;
-			drawHeader();
-			waitRelease();
-			eraseScore();
-		}
 		// Handle left button
 		if (buttonLeft) {
 			if (!collisionDetect(CD_LEFT) && (holdButtonLeft == 0 || holdButtonLeft >= SHIFT_DELAY))
@@ -515,7 +589,8 @@ int main(void) {
 				// Spawn new piece and check if well is full
 				newPiece();
 				if (collisionDetect(CD_ROTATE)) {
-					gameOver();
+					scoreScreen(score);
+					sleepMode();
 					nextPiece = 0;
 					holdPiece = NO_PIECE;
 					score = 0;
@@ -550,14 +625,19 @@ int main(void) {
 			drawScreen();
 			// Display level and score
 			drawValue(104, 3, level);
-			drawValue(112, 0, showFps ? fps : score);
+#ifdef DEBUG_FPS
+			drawValue(112, 0, fps);
+#else
+			drawValue(112, 0, score);
+#endif
 #ifdef DOUBLE_BUFFER
 			ssd1306_switchFrame();
 #endif
 			// Scan button matrix
 			scanMatrix();
-			// Calculate fps
+#ifdef DEBUG_FPS
 			fps = 1000 / (millis() - start);
+#endif
 			// Maintain 40 fps
 			while ((millis() - start) < 25);
 		}

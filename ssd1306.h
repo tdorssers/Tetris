@@ -11,7 +11,7 @@
 
 #include <avr/io.h>
 #include <avr/pgmspace.h>
-#include "i2cmaster.h"
+#include "ssd1306_i2c.h"
 
 #define SSD1306_PAGES 4
 #define SSD1306_COMMAND 0x00
@@ -27,7 +27,7 @@ void ssd1306_fill_length(uint8_t fill, uint8_t length);
 void ssd1306_fill_to_eol(uint8_t fill);
 #define ssd1306_clear_to_eol() ssd1306_fill_to_eol(0x00)
 void ssd1306_fill(uint8_t fill);
-#define ssd1306_clear() ssd1306_fill(0x00)
+void ssd1306_clear(void);
 void ssd1306_new_line(uint8_t fontHeight); // height in pages (8 pixels)
 void ssd1306_bitmap(uint8_t x0, uint8_t y0, uint8_t x1, uint8_t y1, uint8_t bitmap[]);
 void ssd1306_bitmap_p(uint8_t x0, uint8_t y0, uint8_t x1, uint8_t y1, const uint8_t bitmap[]);
@@ -43,8 +43,8 @@ void ssd1306_draw_hline(uint8_t y);
 void ssd1306_draw_vline(uint8_t x);
 // 1. Fundamental Command Table
 void ssd1306_set_contrast(uint8_t contrast);
-void ssd1306_set_entire_display_on(uint8_t enable);
-void ssd1306_set_inverse(uint8_t enable);
+#define ssd1306_set_entire_display_on(enable) ssd1306_send_command((enable) ? 0xA5 : 0xA4)
+#define ssd1306_set_inverse(enable) ssd1306_send_command((enable) ? 0xA7 : 0xA6)
 #define ssd1306_off() ssd1306_send_command(0xAE)
 #define ssd1306_on() ssd1306_send_command(0xAF)
 // Double Buffering Commands

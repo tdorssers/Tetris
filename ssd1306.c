@@ -285,9 +285,21 @@ void ssd1306_fill_to_eol(uint8_t fill) {
 }
 
 void ssd1306_fill(uint8_t fill) {
-	for (uint8_t m = 0; m < SSD1306_PAGES; m++) {
-		ssd1306_set_cursor(0, m);
+	for (uint8_t i = 0; i < SSD1306_PAGES; i++) {
+		ssd1306_set_cursor(0, i);
 		ssd1306_fill_to_eol(fill);
+	}
+	ssd1306_set_cursor(0, 0);
+}
+
+void ssd1306_clear(void) {
+	for (uint8_t y = 0; y < SSD1306_PAGES; y++) {
+		ssd1306_set_cursor(0, y);
+		ssd1306_send_data_start();
+		for (uint8_t i = 0; i < 128; i++) {
+			i2c_write(0x00);
+		}
+		i2c_stop();
 	}
 	ssd1306_set_cursor(0, 0);
 }
@@ -440,20 +452,6 @@ void ssd1306_set_contrast(uint8_t contrast) {
 	i2c_stop();
 }
 
-void ssd1306_set_entire_display_on(uint8_t enable) {
-	if (enable)
-		ssd1306_send_command(0xA5);
-	else
-		ssd1306_send_command(0xA4);
-}
-
-void ssd1306_set_inverse(uint8_t enable) {
-	if (enable)
-		ssd1306_send_command(0xA7);
-	else
-		ssd1306_send_command(0xA6);
-}
-
 // Double Buffering Commands
 
 void ssd1306_switch_render_frame(void) {
@@ -466,8 +464,11 @@ void ssd1306_switch_display_frame(void) {
 }
 
 void ssd1306_switchFrame(void) {
-	ssd1306_switch_display_frame();
-	ssd1306_switch_render_frame();
+	//ssd1306_switch_display_frame();
+	//ssd1306_switch_render_frame();
+	drawingFrame ^= 0x20;
+	ssd1306_send_command(drawingFrame);
+	renderingFrame ^= 0x04;
 }
 
 uint8_t ssd1306_current_render_frame(void) {
