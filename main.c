@@ -4,19 +4,23 @@
  * Created : 8-9-2018 15:51:13
  * Author  : Tim Dorssers
  *
- * Portrait screen orientation is used, for efficient use of the screen area.
+ * The internal 16 MHz PLL is used as the system clock source. A 2x3 button
+ * matrix with reduced IO pins is used for user input. Portrait screen
+ * orientation is used, for efficient use of the screen area.
  * The SSD1306 controller, capable of driving an 128x64 OLED screen, has 1K
- * SRAM. When driving an 128x32 OLED, only 512 bytes are needed. The ATtiny45
- * has just 256 bytes of SRAM, which is not enough to hold a frame buffer.
- * Therefore the screen is rendered in rows of 32 bits and each row is sent in
- * four one byte pages over the I2C bus to the display controller. Up to 47
- * frames per second are rendered, depending on the amount of blocks in the
- * playing field. Pushing the up and down button simultaneously displays the
- * FPS rate. The game uses a 10x30 playing field and implements hard and soft
+ * SRAM. When driving an 128x32 OLED, only 512 bytes are used. The ATtiny45 has
+ * just 256 bytes of SRAM, which is not enough to hold a frame buffer. The
+ * screen is rendered in rows of 32 bits and each row is sent in four pages
+ * of one byte to the display controller using the I2C bus at up to 47 frames
+ * per second. Pushing the up and down button simultaneously displays the FPS
+ * rate, if compiled with the DEBUG_FPS flag. The remaining 512 bytes of the
+ * SSD1306 controller is used for double buffering, if compiled with the
+ * DOUBLE_BUFFER flag.
+ * The game uses a 10x30 playing field and implements hard and soft
  * dropping of the pieces, as well as delayed auto shift (DAS), entry delay
  * (ARE), piece preview, hold piece and the Super Rotation System.
- * The highest score is stored in EEPROM as well as the players name. The game
- * will enter sleep mode automatically. The game wakes up by a button push.
+ * The high score and player name are stored in EEPROM. The system will enter
+ * sleep mode automatically and the game will wake up again by a button push.
  * In game power draw is <20 mA and standby power draw is <1 mA.
  */ 
 
@@ -36,14 +40,14 @@
 #include "ssd1306_i2c.h"
 #include "ssd1306.h"
 
-//#define DOUBLE_BUFFER
-//#define DEBUG_FPS
+#define DOUBLE_BUFFER // Uses 36 bytes of progmem
+#define DEBUG_FPS     // Uses 86 bytes of progmem
 
 // Buffers for font drawing
 char buffer[6];
 uint32_t bitmap[8];
 // Button state variables
-bool buttonLeft, buttonRight, buttonDown, buttonUp, buttonA, buttonB;
+static bool buttonLeft, buttonRight, buttonDown, buttonUp, buttonA, buttonB;
 // Play field is 10 bits wide and 30 rows tall
 #define WELL_MAX 30
 uint16_t well[WELL_MAX];
@@ -55,7 +59,7 @@ uint8_t piece, rotate, nextPiece, holdPiece = NO_PIECE;
 typedef enum {CD_DROP, CD_ROTATE, CD_LEFT, CD_RIGHT, CD_LOCK} mode_t;
 // Random number seed variable
 uint16_t random_number;
-// Delay constants
+// Delay in frames
 #define DROP_DELAY  20
 #define LOCK_DELAY  20
 #define ENTRY_DELAY 20
@@ -63,13 +67,16 @@ uint16_t random_number;
 #define SOFT_DELAY  2
 // Millisecond counter
 volatile uint16_t timer0_millis;
-// Non volatile
+#ifdef DEBUG_FPS
+bool showFps = false;
+#endif
+// Non volatile storage
 uint16_t EEMEM nvHighScore = 0;
 uint8_t EEMEM nvName[6] = "";
 uint16_t EEMEM nvRandomSeed = 1;
-// Mask for play field
+// Block mask for play field
 const uint8_t PROGMEM mask[] = {0xDB, 0xB6, 0x6D, 0xDB};
-// Each piece is 4x4 bits
+// Each piece is 4x4 bits and has 4 rotations
 const uint16_t PROGMEM pieces[] = {
 	0xF00, 0x4444, 0xF0, 0x2222, // I
 	0x170, 0x622, 0x74, 0x223,   // J
@@ -79,6 +86,7 @@ const uint16_t PROGMEM pieces[] = {
 	0x270, 0x262, 0x72, 0x232,   // T
 	0x360, 0x462, 0x36, 0x231    // Z
 };
+// 90 degree clock wise rotated 6x8 pixel font of digits and caps only
 const uint8_t PROGMEM font6x8_90[] = {
 	0xE, 0x11, 0x13, 0x15, 0x19, 0x11, 0xE,   // 0
 	0xE, 0x4, 0x4, 0x4, 0x4, 0x6, 0x4,        // 1
@@ -120,35 +128,37 @@ const uint8_t PROGMEM font6x8_90[] = {
 const char PROGMEM pstrScore[] = "SCORE";
 
 // Prototypes
-uint8_t clearLine(void);
-bool collisionDetect(mode_t mode);
-void drawPiece(uint8_t x, uint8_t y, uint8_t p, uint32_t *row);
-void drawScreen(void);
-void drawString_p(uint8_t x, uint8_t y, const char *s);
-void drawValue(uint8_t x, uint8_t y, uint16_t v);
-inline uint16_t lfsr16_next(uint16_t n);
-inline void matrix_init(void);
-uint16_t millis(void);
-void newPiece(void);
-uint16_t prng(void);
-inline void prng_init(void);
-void scanMatrix(void);
-void scoreScreen (uint16_t score);
-void setupScreen(void);
-void sleepMode(void);
-inline void swapPiece(void);
-inline void timer0_init();
-void waitRelease(void);
+static uint8_t clearLine(void);
+static bool collisionDetect(mode_t mode);
+static void drawHeader(void);
+static void drawPiece(uint8_t x, uint8_t y, uint8_t p, uint32_t *row);
+static void drawScreen(void);
+static void drawString_p(uint8_t x, uint8_t y, const char *s);
+static void drawValue(uint8_t x, uint8_t y, uint16_t v);
+static uint16_t lfsr16_next(uint16_t n);
+static void matrix_init(void);
+static uint16_t millis(void);
+static void newPiece(void);
+static uint16_t prng(void);
+static void prng_init(void);
+static void scanMatrix(void);
+static void scoreScreen (uint16_t score);
+static void setupScreen(void);
+static void sleepMode(void);
+static void swapPiece(void);
+static void timer0_init();
+static void waitRelease(void);
 
-// Draw one line of the specified piece at position y in row
+// Draw line x of the specified piece p at position y in row
 void drawPiece(uint8_t x, uint8_t y, uint8_t p, uint32_t *row) {
 	uint8_t i, xx, yy;
 	
-	xx = x * 4;
-	yy = (y * 3) + 1;
+	xx = x * 4; // x is between 0 and 3
+	yy = (y * 3) + 1; // y is between 0 and 30
+	// Scan 4 bits (one line), each bit represents a block
 	for (i = xx; i < xx + 4; i++) {
 		if (pgm_read_word(&pieces[p]) & 1 << i) {
-			*row |= 7UL << yy;
+			*row |= 7UL << yy; // 3 pixels for each block
 		}
 		yy += 3;
 	}
@@ -166,6 +176,7 @@ void drawScreen(void) {
 		for (x = 0; x < WELL_MAX + 5; x++) {
 			if (x < WELL_MAX) {
 				row = 1 << 0 | 1UL << 31; // Side lines of well
+				// Draw blocks
 				for (i = 0; i < 10; i++) {
 					if (well[x] & 1 << i) {
 						row |= 7UL << ((i * 3) + 1); // 3 pixels for each block
@@ -176,12 +187,15 @@ void drawScreen(void) {
 					drawPiece(x - pieceX, pieceY, piece * 4 + rotate, &row);
 				}
 			} else if (x == WELL_MAX || x == WELL_MAX + 4) {
-				i2c_write(0xFF); // Top and bottom lines of rectangles
+				// Draw top and bottom lines of rectangles for hold and next pieces
+				i2c_write(0xFF);
 				continue;
 			} else {
-				// Draw sides of rectangles with hold and next pieces
+				// Draw sides of rectangles for hold and next pieces
 				row = 1 << 0 | 1UL << 15 | 1UL << 31;
+				// Draw next piece
 				drawPiece(x - (WELL_MAX + 1), 6, nextPiece * 4, &row);
+				// Draw hold piece
 				if (holdPiece != NO_PIECE)
 					drawPiece(x - (WELL_MAX + 1), 0, holdPiece * 4, &row);
 			}
@@ -201,16 +215,19 @@ void drawString_p(uint8_t x, uint8_t y, const char *s) {
 	uint16_t offset;
 	
 	memset(bitmap, 0, sizeof(bitmap));
-	shift = y * 8;
-	while ((c = (s) ? pgm_read_byte(s + i) : buffer[i])) {		
+	shift = y * 8; // A page is 8 pixels
+	while ((c = (s) ? pgm_read_byte(s + i) : buffer[i])) {	
+		// Don't draw space	
 		if (c > 32) {
+			// Chars A-Z are immediately after digits in this font
 			if (c > 64)
 				c -= 7;
+			// Digit 0 is the first char and each char is 7 bytes
 			offset = (uint16_t)(c - 48) * 7;
 			for (j = 1; j < 8; j++)
 				bitmap[j] |= (uint32_t)pgm_read_byte(&font6x8_90[offset++]) << shift;
 		}
-		shift += 6;
+		shift += 6; // A char is 6 pixels wide
 		i++;
 	}
 	for (i = y; i < 4; i++) {
@@ -222,20 +239,26 @@ void drawString_p(uint8_t x, uint8_t y, const char *s) {
 	}
 }
 
+// Convert value to array and draw string
 void drawValue(uint8_t x, uint8_t y, uint16_t v) {
 	utoa(v, buffer, 10);
 	drawString_p(x, y, NULL);
+}
+
+// Draw score or FPS string on top the screen
+void drawHeader(void) {
+#ifdef DEBUG_FPS
+	drawString_p(120, 0, (showFps) ? PSTR("FPS  ") : pstrScore);
+#else
+	drawString_p(120, 0, pstrScore);
+#endif	
 }
 
 // Setup game screen
 void setupScreen(void) {
 	ssd1306_clear();
 	ssd1306_on();
-#ifdef DEBUG_FPS
-	drawString_p(120, 0, PSTR("FPS  "));
-#else
-	drawString_p(120, 0, pstrScore);
-#endif
+	drawHeader();
 	drawString_p(104, 0, PSTR("LEV"));
 	memset(well, 0, sizeof(well));
 }
@@ -243,33 +266,41 @@ void setupScreen(void) {
 // End of game screen
 void scoreScreen (uint16_t score) {
 	bool blink = false;
-	uint8_t i = 0, c = 65, delay = 0, cnt = 80;
+	uint8_t i = 0, c = 65, delay = 0, cnt = 16;
 	uint16_t highScore;
 	
 	drawString_p(72, 0, PSTR(" GAME"));
 	drawString_p(64, 0, PSTR(" OVER"));
 	drawString_p(56, 0, PSTR("HIGH "));
 	drawString_p(48, 0, pstrScore);
-	if (score < (highScore = eeprom_read_word(&nvHighScore))) {
+	// Read high score from EEPROM
+	highScore = eeprom_read_word(&nvHighScore);
+	if (highScore != 0xFFFF && score < highScore) {
+		// Score is below high score, read player name from EEPROM
 		eeprom_read_block(&buffer, &nvName, sizeof(buffer));
 		drawString_p(40, 0, NULL);
 		drawValue(32, 0, highScore);
 		return;
 	}
+	// New high score
 	drawString_p(40, 0, PSTR(" NAME"));
 	memset(buffer, 0, sizeof(buffer));
 	do {
 		scanMatrix();
+		// Handle left button
 		if (buttonLeft && i > 0) {
 			waitRelease();
 			i--;
 		}
+		// Handle right button
 		if (buttonRight && i < 4) {
 			waitRelease();
 			i++;
 		}
+		// Handle up button
 		if (buttonUp) {
 			waitRelease();
+			cnt = 16;
 			if (c == 32)
 				c = 65;
 			else {
@@ -279,8 +310,10 @@ void scoreScreen (uint16_t score) {
 					c = 32;
 			}
 		}
+		// Handle down button
 		if (buttonDown) {
 			waitRelease();
+			cnt = 16;
 			if (c == 32)
 				c = 90;
 			else {
@@ -290,17 +323,20 @@ void scoreScreen (uint16_t score) {
 					c = 32;
 			}
 		}
-		buffer[i] = (blink) ? 32 : c;
+		buffer[i] = (blink) ? 32 : c;	// Alternate char and space at current index
 		drawString_p(32, 0, NULL);
-		buffer[i] = c;
+		buffer[i] = c;					// Store char
+		// Toggle boolean blink every 256 cycles
 		if (--delay == 0) {
 			blink ^= true;
+			// Check for idle timeout
 			if (--cnt == 0)
 				break;
 		}
 	} while (!buttonA && !buttonB);
 	waitRelease();
 	drawString_p(32, 0, NULL);
+	// Store score and player in EEPROM
 	eeprom_write_block(&buffer, &nvName, sizeof(nvName));
 	eeprom_write_word(&nvHighScore, score);
 }
@@ -308,7 +344,7 @@ void scoreScreen (uint16_t score) {
 // Dummy ISR
 EMPTY_INTERRUPT(WDT_vect);
 
-// Sleep mode
+// Periodically scan the button matrix in sleep mode using WDT
 void sleepMode(void) {
 	uint8_t cnt = 80;
 	
@@ -317,12 +353,14 @@ void sleepMode(void) {
 	WDTCR = _BV(WDCE) | _BV(WDE);				// Watchdog change enable
 	WDTCR = _BV(WDIE) | _BV(WDP1) | _BV(WDP0);	// Watchdog timeout interrupt enable, period 0.125 s
 	sei();
-	set_sleep_mode(SLEEP_MODE_PWR_DOWN);
 	do {
 		scanMatrix();
-		sleep_mode(); // Put the device into sleep mode
+		MCUCR = _BV(BODSE) | _BV(BODS);			// BOD sleep enable
+		MCUCR = _BV(BODS) | _BV(SM1) | _BV(SE);	// BOD sleep, sleep mode power-down, sleep enable
+		sleep_cpu();							// Put the device into sleep mode
+		MCUCR = 0x00;							// Sleep disable
 		if (--cnt == 0)
-			ssd1306_off();
+			ssd1306_off();						// Turn display off
 	} while (!buttonLeft && !buttonRight && !buttonUp && !buttonDown && !buttonA && !buttonB);
 	MCUSR = 0x00;					// Clear watchdog reset flag
 	WDTCR = _BV(WDCE) | _BV(WDE);	// Watchdog change enable
@@ -337,22 +375,26 @@ bool collisionDetect(mode_t mode) {
 	int8_t x, y;
 	
 	for (i = 0; i < 16; i++) {
-		x = pieceX + (i / 4);
+		x = pieceX + i / 4;
 		y = pieceY + i % 4;
 		switch (mode) {
-			case CD_DROP: x--; break;
-			case CD_LEFT: y--; break;
-			case CD_RIGHT: y++;
-			default: ;
+			case CD_DROP: x--; break;	// Check below piece
+			case CD_LEFT: y--; break;	// Check left of piece
+			case CD_RIGHT: y++;			// Check right of piece
+			default: ;					// Check current location
 		}
 		if (pgm_read_word(&pieces[piece * 4 + rotate]) & 1 << i) {
 			if (mode == CD_LOCK)
+				// Store block (one bit) in well array
 				well[x] |= 1 << y;
 			else {
+				// Check for overlapping block
 				if (x < 0 || well[x] & 1 << y)
 					return true;
+				// Check if block is outside playing field at the left
 				if ((mode == CD_ROTATE || mode == CD_LEFT) && y < 0)
 					return true;
+				// Check if block is outside playing field at the right
 				if ((mode == CD_ROTATE || mode == CD_RIGHT) && y > 9)
 					return true;
 			}
@@ -366,11 +408,14 @@ uint8_t clearLine(void) {
 	uint8_t x, xx, s = 0;
 	
 	for (x = 0; x < WELL_MAX; x++) {
+		// Check if all 10 bits are set
 		if (well[x] >= 0x3FF) {
+			// Clear line by shifting blocks down one row
 			for (xx = x; xx < WELL_MAX - 1; xx++) {
 				well[xx] = well[xx + 1];
 			}
 			well[WELL_MAX - 1] = 0;
+			// Count cleared lines
 			s++;
 		}
 	}
@@ -378,7 +423,7 @@ uint8_t clearLine(void) {
 }
 
 // Galois Linear Feedback Shift Register
-inline uint16_t lfsr16_next(uint16_t n) {
+uint16_t lfsr16_next(uint16_t n) {
 	return (n >> 1) ^ (-(n & 0x1) & 0xB400);
 }
 
@@ -401,7 +446,7 @@ void newPiece(void) {
 }
 
 // Swap falling piece with hold piece
-inline void swapPiece(void) {
+void swapPiece(void) {
 	uint8_t temp;
 	
 	temp = piece;
@@ -413,7 +458,7 @@ inline void swapPiece(void) {
 }
 
 // Initialize button matrix
-inline void matrix_init(void) {
+void matrix_init(void) {
 	PORTB |= _BV(1) | _BV(3) | _BV(4); // enable pull up
 }
 
@@ -476,7 +521,7 @@ uint16_t millis(void) {
 }
 
 // Initialize 1 millisecond timer
-inline void timer0_init() {
+void timer0_init() {
 	TCCR0A = _BV(WGM01);
 	TCCR0B = _BV(CS00) | _BV(CS01);
 	OCR0A = (F_CPU / 1000) / 64;
@@ -485,7 +530,7 @@ inline void timer0_init() {
 }
 
 // Read random seed from EEPROM
-inline void prng_init(void) {
+void prng_init(void) {
 	random_number = eeprom_read_word(&nvRandomSeed);
 	newPiece();
 	newPiece();
@@ -512,6 +557,18 @@ int main(void) {
 #endif
 	while (1) {
 		start = millis();
+#ifdef DEBUG_FPS
+		// Concurrent pushing of up and down button toggles displaying fps or score
+		if (buttonUp && buttonDown) {
+			showFps ^= true;
+			drawHeader();
+#ifdef DOUBLE_BUFFER
+			ssd1306_switchFrame();
+			drawHeader();
+#endif
+			waitRelease();
+		}
+#endif
 		// Handle left button
 		if (buttonLeft) {
 			if (!collisionDetect(CD_LEFT) && (holdButtonLeft == 0 || holdButtonLeft >= SHIFT_DELAY))
@@ -626,7 +683,7 @@ int main(void) {
 			// Display level and score
 			drawValue(104, 3, level);
 #ifdef DEBUG_FPS
-			drawValue(112, 0, fps);
+			drawValue(112, 0, (showFps) ? fps : score);
 #else
 			drawValue(112, 0, score);
 #endif

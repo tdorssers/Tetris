@@ -1,5 +1,5 @@
 /*
- * ssd1306_i2c.c
+ * Bit-bang I2C routines for SSD1306 controller driver
  *
  * Created: 26-9-2018 08:51:43
  *  Author: Tim Dorssers

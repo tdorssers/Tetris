@@ -1,5 +1,5 @@
 /*
- * ssd1306.c
+ * SSD1306 controller frame-buffer-less driver with 6x8 and 8x16 pixel fonts
  *
  * Created: 9-9-2018 14:13:39
  *  Author: Tim Dorssers
@@ -296,7 +296,7 @@ void ssd1306_clear(void) {
 	for (uint8_t y = 0; y < SSD1306_PAGES; y++) {
 		ssd1306_set_cursor(0, y);
 		ssd1306_send_data_start();
-		for (uint8_t i = 0; i < 128; i++) {
+		for (uint8_t i = 128; --i > 0; ) {
 			i2c_write(0x00);
 		}
 		i2c_stop();

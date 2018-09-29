@@ -1,5 +1,5 @@
 /*
- * ssd1306_i2c.h
+ * Bit-bang I2C routines for SSD1306 controller driver
  *
  * Created: 26-9-2018 08:52:01
  *  Author: Tim Dorssers
@@ -28,15 +28,15 @@
 #define I2C_LOW(DREG, PREG, BIT)  { DREG |= (1 << BIT); PREG &= ~(1 << BIT); }
 
 #define I2C_START_STOP_DELAY 0.600
-#define I2C_RISE_TIME        0.300
-#define I2C_FALL_TIME        0.300
+#define I2C_RISE_TIME        0.050
+#define I2C_FALL_TIME        0.050
 #define I2C_DATA_HOLD_TIME   0.300
 #define I2C_IDLE_TIME        1.300
 #define I2C_CLOCK            2.500
 #define I2C_HALF_CLOCK       ((I2C_CLOCK - I2C_FALL_TIME - I2C_RISE_TIME - I2C_FALL_TIME) / 2)
 
-void i2c_stop(void);
-void i2c_start(uint8_t addr);
-void i2c_write(uint8_t data);
+extern void i2c_stop(void);
+extern void i2c_start(uint8_t addr);
+extern void i2c_write(uint8_t data);
 
 #endif /* SSD1306_I2C_H_ */
