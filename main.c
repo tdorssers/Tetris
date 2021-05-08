@@ -11,7 +11,7 @@
  * SRAM. When driving an 128x32 OLED, only 512 bytes are used. The ATtiny45 has
  * just 256 bytes of SRAM, which is not enough to hold a frame buffer. The
  * screen is rendered in rows of 32 bits and each row is sent in four pages
- * of one byte to the display controller using the I2C bus at up to 47 frames
+ * of one byte to the display controller using the I2C bus at up to 45 frames
  * per second. Pushing the up and down button simultaneously displays the FPS
  * rate, if compiled with the DEBUG_FPS flag. The remaining 512 bytes of the
  * SSD1306 controller is used for double buffering, if compiled with the
@@ -524,7 +524,7 @@ uint16_t millis(void) {
 void timer0_init() {
 	TCCR0A = _BV(WGM01);
 	TCCR0B = _BV(CS00) | _BV(CS01);
-	OCR0A = (F_CPU / 1000) / 64;
+	OCR0A = ((F_CPU / 1000) / 64) - 1;
 	TIMSK = _BV(OCIE0A);
 	sei();
 }
